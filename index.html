@@ -900,10 +900,27 @@ const UI = (() => {
     ctx.fillStyle = '#eaffff'; ctx.textAlign = 'center'; ctx.font = 'bold 28px monospace';
     ctx.fillText('NEON SURVIVOR', LW / 2, 300);
     ctx.font = '16px monospace';
-    ctx.fillText('タップ&ドラッグで移動', LW / 2, 340);
+    ctx.fillText('好きな場所を押してスライドで移動', LW / 2, 340);
     ctx.fillText('自動で攻撃・レベルアップでどんどん強くなる', LW / 2, 364);
     ctx.fillText('タップでスタート', LW / 2, 410);
     ctx.textAlign = 'left';
+  }
+
+  // floating virtual stick: a base ring at the touch-down point and a knob
+  // that trails the finger, clamped to the stick radius — lets the avatar
+  // stay in clear view instead of being covered by the thumb.
+  function drawJoystick(ctx, origin, cur, radius) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(234,255,255,0.35)'; ctx.lineWidth = 2;
+    ctx.shadowColor = '#7df9ff'; ctx.shadowBlur = 6;
+    ctx.beginPath(); ctx.arc(origin.x, origin.y, radius, 0, Math.PI * 2); ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = 'rgba(125,249,255,0.28)';
+    ctx.shadowColor = '#7df9ff'; ctx.shadowBlur = 10;
+    ctx.beginPath(); ctx.arc(cur.x, cur.y, 20, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
   }
 
   function drawGameOver(ctx, LW, LH, elapsed, level) {
@@ -918,7 +935,7 @@ const UI = (() => {
 
   return {
     drawEnemy, drawPlayer, drawProjectiles, drawOrbs, drawHUD, drawTitle, drawGameOver,
-    drawEnemyBullets, drawBolts, drawMissiles, drawOrbitBlades,
+    drawEnemyBullets, drawBolts, drawMissiles, drawOrbitBlades, drawJoystick,
   };
 })();
 
@@ -936,7 +953,12 @@ const UI = (() => {
   }
   addEventListener('resize', resize); resize();
 
-  let state = 'TITLE', touching = false, target = { x: 0, y: 0 };
+  // floating joystick: the touch-down point becomes the stick's center, so the
+  // avatar moves relative to drag direction instead of snapping under the
+  // finger — keeps the avatar visible instead of hidden under the thumb.
+  const JOY_RADIUS = 46;
+  let state = 'TITLE', touching = false;
+  let joyOrigin = { x: 0, y: 0 }, joyCur = { x: 0, y: 0 };
   let player, enemies, elapsed, spawnTimer, burstTimer, waveN, T = 0;
   let hitStop = 0, comboCount = 0, comboTimer = 0, trailTimer = 0, nextBossLevel = 25;
 
@@ -947,7 +969,7 @@ const UI = (() => {
     Enemies.reset();
     elapsed = 0; spawnTimer = 0.6; burstTimer = 7 + Math.random() * 3; waveN = 1;
     hitStop = 0; comboCount = 0; comboTimer = 0; trailTimer = 0; nextBossLevel = 25;
-    touching = false; target = { x: player.x, y: player.y };
+    touching = false;
   }
   function start() { Audio2.audioInit(); reset(); state = 'PLAY'; }
 
@@ -955,15 +977,22 @@ const UI = (() => {
     const r = canvas.getBoundingClientRect();
     return { x: (clientX - r.left) / scale, y: (clientY - r.top) / scale };
   }
+  function setJoyCur(p) {
+    const dx = p.x - joyOrigin.x, dy = p.y - joyOrigin.y, d = Math.hypot(dx, dy);
+    if (d <= JOY_RADIUS) { joyCur = p; return; }
+    const s = JOY_RADIUS / d;
+    joyCur = { x: joyOrigin.x + dx * s, y: joyOrigin.y + dy * s };
+  }
   canvas.addEventListener('pointerdown', e => {
     Audio2.audioInit();
     if (state === 'TITLE' || state === 'OVER') { start(); return; }
     touching = true;
-    const p = toLogical(e.clientX, e.clientY); target.x = p.x; target.y = p.y;
+    const p = toLogical(e.clientX, e.clientY);
+    joyOrigin = p; joyCur = p;
   });
   canvas.addEventListener('pointermove', e => {
     if (!touching) return;
-    const p = toLogical(e.clientX, e.clientY); target.x = p.x; target.y = p.y;
+    setJoyCur(toLogical(e.clientX, e.clientY));
   });
   addEventListener('pointerup', () => { touching = false; });
   addEventListener('pointercancel', () => { touching = false; });
@@ -981,9 +1010,14 @@ const UI = (() => {
     }
 
     if (touching) {
-      const dx = target.x - player.x, dy = target.y - player.y, d = Math.hypot(dx, dy);
-      if (d > 2) {
-        const mv = Math.min(d, player.stats.speed * dt); player.x += dx / d * mv; player.y += dy / d * mv;
+      // stick displacement (not player-to-target) drives direction; magnitude
+      // ramps analog speed in from a small deadzone near the origin
+      const dx = joyCur.x - joyOrigin.x, dy = joyCur.y - joyOrigin.y, d = Math.hypot(dx, dy);
+      const DEADZONE = 8;
+      if (d > DEADZONE) {
+        const mag = Math.min(1, (d - DEADZONE) / (JOY_RADIUS - DEADZONE));
+        const mv = player.stats.speed * mag * dt;
+        player.x += dx / d * mv; player.y += dy / d * mv;
         player.facing = Math.atan2(dy, dx);
         trailTimer -= dt;
         if (trailTimer <= 0) {
@@ -1127,6 +1161,7 @@ const UI = (() => {
     FX.drawFlash(ctx, LW, LH);
 
     if (state === 'PLAY') UI.drawHUD(ctx, LW, player, waveN, elapsed);
+    if (state === 'PLAY' && touching) UI.drawJoystick(ctx, joyOrigin, joyCur, JOY_RADIUS);
     if (state === 'TITLE') UI.drawTitle(ctx, LW);
     if (state === 'OVER') UI.drawGameOver(ctx, LW, LH, elapsed, player.level);
   }
